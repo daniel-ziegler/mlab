@@ -50,9 +50,7 @@ __global__ void reduce_sum_tree(float* dest, float* A, int size) {
         v += A[i];
     }
 
-    int stride = WARPSIZE;
-    while (stride > 1) {
-        stride /= 2;
+    for (int stride = WARPSIZE/2; stride>0; stride/=2) {
         v += __shfl_down_sync(0xffffffff, v, stride);
     }
 
@@ -64,9 +62,7 @@ __global__ void reduce_sum_tree(float* dest, float* A, int size) {
     __syncthreads();
     if (threadIdx.x < WARPSIZE) {
         v = scratch[threadIdx.x];
-        int stride = SCRATCHSIZE;
-        while (stride > 1) {
-            stride /= 2;
+        for (int stride = SCRATCHSIZE/2; stride>0; stride/=2) {
             v += __shfl_down_sync(0xffffffff, v, stride);
         }
 
@@ -81,7 +77,6 @@ inline int ceil_div(int a, int b) {
 }
 
 float cuda_reduce_sum_tree(float* gpu_Dest, float* gpu_A, size_t size) {
-
     const int threadsPerBlock = 512;
     int blocks = min(ceil_div(size, threadsPerBlock), 1024);
     reduce_sum_tree<<<blocks, threadsPerBlock>>>(gpu_Dest, gpu_A, size);
