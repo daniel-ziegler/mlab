@@ -60,10 +60,10 @@ __global__ void reduce_sum_tree(float* dest, float* A, int size) {
         scratch[threadIdx.x / WARPSIZE] = v;
     }
     __syncthreads();
-    if (threadIdx.x < WARPSIZE) {
+    if (threadIdx.x < SCRATCHSIZE) {
         v = scratch[threadIdx.x];
         for (int stride = SCRATCHSIZE/2; stride>0; stride/=2) {
-            v += __shfl_down_sync(0xffffffff, v, stride);
+            v += __shfl_down_sync(0xffff, v, stride);
         }
 
         if (threadIdx.x == 0) {
@@ -91,7 +91,7 @@ float cuda_reduce_sum_tree(float* gpu_Dest, float* gpu_A, size_t size) {
 }
 
 int main() {
-    std::vector<size_t> sizes = {32, 200, 512, 65536, 1<<20, 2000000, 5000000, 10000000, 100000000, 1<<29};
+    std::vector<size_t> sizes = {32, 200, 512, 9001, 65536, 1<<20, 2000000, 5000000, 10000000, 100000000, 1<<29};
     for (auto size : sizes) {
         std::vector<float> A;
         std::mt19937_64 rng(42);
