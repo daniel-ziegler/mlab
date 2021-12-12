@@ -41,10 +41,14 @@ constexpr int BLOCKSIZE = 512;
 constexpr int WARPSIZE = 32;
 
 __global__ void reduce_sum_tree(float* dest, float* A, int size) {
-    int blockStart = blockIdx.x * BLOCKSIZE;
-    int idx = blockStart + threadIdx.x;
     
-    float v = idx < size ? A[idx] : 0.0;
+    int blockStart = blockIdx.x * BLOCKSIZE;
+    int totalSize = BLOCKSIZE*gridDim.x;
+    int idx = blockStart + threadIdx.x;
+    float v = 0.0;
+    for (int i = idx; i<size; i+=totalSize){
+        v += A[i];
+    }
 
     int stride = WARPSIZE;
     while (stride > 1) {
@@ -67,7 +71,7 @@ __global__ void reduce_sum_tree(float* dest, float* A, int size) {
         }
 
         if (threadIdx.x == 0) {
-            dest[blockIdx.x] = v;
+            atomicAdd(dest, v);
         }
     }
 }
@@ -76,25 +80,23 @@ inline int ceil_div(int a, int b) {
     return (a + b - 1) / b;
 }
 
-float cuda_reduce_sum_tree(float* gpu_B, float* gpu_A, size_t size) {
-    while (size > 1) {
-        int numBlocks = ceil_div(size, BLOCKSIZE);
-        reduce_sum_tree<<<numBlocks, BLOCKSIZE>>>(gpu_B, gpu_A, size);
+float cuda_reduce_sum_tree(float* gpu_Dest, float* gpu_A, size_t size) {
 
-        CUDA_ERROR_CHK(cudaPeekAtLastError());
+    const int threadsPerBlock = 512;
+    int blocks = min(ceil_div(size, threadsPerBlock), 1024);
+    reduce_sum_tree<<<blocks, threadsPerBlock>>>(gpu_Dest, gpu_A, size);
 
-        std::swap(gpu_A, gpu_B);
-        size = ceil_div(size, BLOCKSIZE);
-    }
+    CUDA_ERROR_CHK(cudaPeekAtLastError());
+
     CUDA_ERROR_CHK(cudaDeviceSynchronize());
 
     float dest;
-    CUDA_ERROR_CHK(cudaMemcpy(&dest, gpu_A, sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_ERROR_CHK(cudaMemcpy(&dest, gpu_Dest, sizeof(float), cudaMemcpyDeviceToHost));
     return dest;
 }
 
 int main() {
-    std::vector<size_t> sizes = {32, 200, 512, 65536, 1<<20, 2000000, 5000000, 10000000, 100000000};
+    std::vector<size_t> sizes = {32, 200, 512, 65536, 1<<20, 2000000, 5000000, 10000000, 100000000, 1<<29};
     for (auto size : sizes) {
         std::vector<float> A;
         std::mt19937_64 rng(42);
@@ -108,21 +110,24 @@ int main() {
         CUDA_ERROR_CHK(cudaMemcpy(gpu_A, A.data(), A.size() * sizeof(float),
                                     cudaMemcpyHostToDevice));
 
-        int B_size = ceil_div(A.size(), BLOCKSIZE);
-        float *gpu_B;
-        CUDA_ERROR_CHK(cudaMalloc(&gpu_B, B_size * sizeof(float)));
+        float *gpu_dest;
+        CUDA_ERROR_CHK(cudaMalloc(&gpu_dest, sizeof(float)));
 
-        float sum = cuda_reduce_sum_tree(gpu_B, gpu_A, A.size());
+        float sum = cuda_reduce_sum_tree(gpu_dest, gpu_A, A.size());
         std::cout << "GPU sum: " << sum << std::endl;
 
-        float cpu_sum = cpu_reduce_sum(A);
-        std::cout << "CPU sum: " << cpu_sum << std::endl;
+        if (size < 1<<23) {
+            float cpu_sum = cpu_reduce_sum(A);
+            std::cout << "CPU sum: " << cpu_sum << std::endl;
+        }
 
-        int n_iters = 50;
+        int n_iters = min(50, ceil_div(1<<30, size));
         Timer timer;
         float total = 0;
         for (int i = 0; i < n_iters; i++) {
-            cuda_reduce_sum_tree(gpu_B, gpu_A, A.size());
+            // cuda_reduce_sum_tree(gpu_dest, gpu_A, A.size());
+            thrust_reduce_sum(gpu_A, A.size());
+
             CUDA_ERROR_CHK(cudaDeviceSynchronize());
         }
         timer.stop();
