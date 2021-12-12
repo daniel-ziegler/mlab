@@ -38,31 +38,37 @@ float cpu_reduce_sum(const std::vector<float>& A) {
 }
 
 constexpr int BLOCKSIZE = 512;
+constexpr int WARPSIZE = 32;
 
 __global__ void reduce_sum_tree(float* dest, float* A, int size) {
-    int readSize = 2 * BLOCKSIZE;
-    int blockStart = blockIdx.x * readSize;
+    int blockStart = blockIdx.x * BLOCKSIZE;
     int idx = blockStart + threadIdx.x;
-    __shared__ float scratch[BLOCKSIZE];
-    int stride = BLOCKSIZE;
-    if (idx < size) {
-        float acc = A[idx];
-        if (idx + stride < size) {
-            acc += A[idx + stride];
-        }
-        scratch[threadIdx.x] = acc;
-    }
-    __syncthreads();
+    
+    float v = idx < size ? A[idx] : 0.0;
+
+    int stride = WARPSIZE;
     while (stride > 1) {
         stride /= 2;
-        if (threadIdx.x < stride && idx + stride < size) {
-            scratch[threadIdx.x] += scratch[threadIdx.x + stride];
-        }
-        __syncthreads();
+        v += __shfl_down_sync(0xffffffff, v, stride);
     }
-    // write into dest
-    if (threadIdx.x == 0) {
-        dest[blockIdx.x] = scratch[0];
+
+    const int SCRATCHSIZE = BLOCKSIZE / WARPSIZE;
+    __shared__ float scratch[SCRATCHSIZE];
+    if (threadIdx.x % WARPSIZE == 0) {
+        scratch[threadIdx.x / WARPSIZE] = v;
+    }
+    __syncthreads();
+    if (threadIdx.x < WARPSIZE) {
+        v = scratch[threadIdx.x];
+        int stride = SCRATCHSIZE;
+        while (stride > 1) {
+            stride /= 2;
+            v += __shfl_down_sync(0xffffffff, v, stride);
+        }
+
+        if (threadIdx.x == 0) {
+            dest[blockIdx.x] = v;
+        }
     }
 }
 
@@ -72,14 +78,13 @@ inline int ceil_div(int a, int b) {
 
 float cuda_reduce_sum_tree(float* gpu_B, float* gpu_A, size_t size) {
     while (size > 1) {
-        int readSize = 2*BLOCKSIZE;
-        int numBlocks = ceil_div(size, readSize);
+        int numBlocks = ceil_div(size, BLOCKSIZE);
         reduce_sum_tree<<<numBlocks, BLOCKSIZE>>>(gpu_B, gpu_A, size);
 
         CUDA_ERROR_CHK(cudaPeekAtLastError());
 
         std::swap(gpu_A, gpu_B);
-        size = ceil_div(size, readSize);
+        size = ceil_div(size, BLOCKSIZE);
     }
     CUDA_ERROR_CHK(cudaDeviceSynchronize());
 
@@ -89,7 +94,7 @@ float cuda_reduce_sum_tree(float* gpu_B, float* gpu_A, size_t size) {
 }
 
 int main() {
-    std::vector<size_t> sizes = {200, 300, 512, 2048, 301, 65536, 1<<20, 10000, 100000, 1000000, 2000000, 5000000, 10000000};
+    std::vector<size_t> sizes = {32, 200, 512, 65536, 1<<20, 2000000, 5000000, 10000000, 100000000};
     for (auto size : sizes) {
         std::vector<float> A;
         std::mt19937_64 rng(42);
