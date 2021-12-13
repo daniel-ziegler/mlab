@@ -77,9 +77,8 @@ inline int ceil_div(int a, int b) {
 }
 
 float cuda_reduce_sum_tree(float* gpu_Dest, float* gpu_A, size_t size) {
-    const int threadsPerBlock = 512;
-    int blocks = min(ceil_div(size, threadsPerBlock), 1024);
-    reduce_sum_tree<<<blocks, threadsPerBlock>>>(gpu_Dest, gpu_A, size);
+    int blocks = min(ceil_div(size, BLOCKSIZE), 1024);
+    reduce_sum_tree<<<blocks, BLOCKSIZE>>>(gpu_Dest, gpu_A, size);
 
     CUDA_ERROR_CHK(cudaPeekAtLastError());
 
@@ -91,13 +90,13 @@ float cuda_reduce_sum_tree(float* gpu_Dest, float* gpu_A, size_t size) {
 }
 
 int main() {
-    std::vector<size_t> sizes = {32, 200, 512, 9001, 65536, 1<<20, 2000000, 5000000, 10000000, 100000000, 1<<29};
+    std::vector<size_t> sizes = {32, 200, 512, 65536, 100000, 1<<20, 2000000, 10000000, 100000000, 2<<29};
     for (auto size : sizes) {
         std::vector<float> A;
         std::mt19937_64 rng(42);
-        std::normal_distribution<> normal_dist(0.0, 1);
+        std::uniform_real_distribution<> dist(0.0, 1.0);
         for (size_t i = 0; i < size; i++) {
-            A.push_back(normal_dist(rng));
+            A.push_back(dist(rng));
         }
 
         float *gpu_A;
@@ -107,6 +106,7 @@ int main() {
 
         float *gpu_dest;
         CUDA_ERROR_CHK(cudaMalloc(&gpu_dest, sizeof(float)));
+        CUDA_ERROR_CHK(cudaMemset(gpu_dest, 0, sizeof(float)));
 
         float sum = cuda_reduce_sum_tree(gpu_dest, gpu_A, A.size());
         std::cout << "GPU sum: " << sum << std::endl;
@@ -129,5 +129,8 @@ int main() {
         // std::cerr << total << "\n";
         std::cout << size << "," << timer.elapsed() / (n_iters * size) << std::endl;
         std::cout << std::endl;
+
+        CUDA_ERROR_CHK(cudaFree(gpu_A));
+        CUDA_ERROR_CHK(cudaFree(gpu_dest));
     }
 }
